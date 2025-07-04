@@ -1,55 +1,5 @@
-document.addEventListener('DOMContentLoaded', function() {
-    // Sample data - replace with your actual executive nominees
-    let executives = [
-        {
-            id: 1,
-            name: "Paul Asuma Sumbanso",
-            position: "President",
-            image: "https://randomuser.me/api/portraits/men/32.jpg",
-            yesVotes: 0,
-            noVotes: 0
-        },
-        {
-            id: 2,
-            name: "Zainabu Farouk",
-            position: "Vice President",
-            image: "https://randomuser.me/api/portraits/women/44.jpg",
-            yesVotes: 0,
-            noVotes: 0
-        },
-        {
-            id: 3,
-            name: "Gregory Sondon Samwine",
-            position: "General Secretary",
-            image: "https://randomuser.me/api/portraits/men/67.jpg",
-            yesVotes: 0,
-            noVotes: 0
-        },
-        {
-            id: 4,
-            name: "Noah Bayeliyei",
-            position: "Financial Secretary",
-            image: "https://randomuser.me/api/portraits/women/63.jpg",
-            yesVotes: 0,
-            noVotes: 0
-        },
-        {
-            id: 5,
-            name: "Yussif Seidu",
-            position: "Organizer",
-            image: "https://randomuser.me/api/portraits/men/85.jpg",
-            yesVotes: 0,
-            noVotes: 0
-        },
-        
-    ];
-
-    // Initialize local storage for voting
-    if (!localStorage.getItem('hasVoted')) {
-        localStorage.setItem('hasVoted', 'false');
-        localStorage.setItem('votes', JSON.stringify({}));
-    }
-
+document.addEventListener('DOMContentLoaded', async function() {
+    // DOM Elements
     const executivesContainer = document.getElementById('executivesContainer');
     const submitVotesBtn = document.getElementById('submitVotesBtn');
     const resultsSummary = document.getElementById('resultsSummary');
@@ -60,13 +10,65 @@ document.addEventListener('DOMContentLoaded', function() {
     const votingStatus = document.getElementById('votingStatus');
     const statusMessage = document.getElementById('statusMessage');
 
-    let userVotes = JSON.parse(localStorage.getItem('votes'));
-    let hasSubmitted = localStorage.getItem('hasVoted') === 'true';
+    // State variables
+    let executives = [];
+    let userVotes = {};
+    let hasSubmitted = false;
 
-    // Set total candidates count
-    totalCandidatesElement.textContent = executives.length;
+    // Initialize the application
+    async function initializeApp() {
+        // Load initial data
+        await loadExecutives();
+        
+        // Initialize voting state
+        initializeVotingState();
+        
+        // Render the UI
+        renderExecutives();
+        updateVoteCount();
+        
+        // Show summary if already voted
+        if (hasSubmitted) {
+            resultsSummary.classList.remove('hidden');
+            renderSummary();
+        }
+    }
 
-    // Render executive cards
+    // Load executives data from server
+    async function loadExecutives() {
+        try {
+            showStatusMessage('Loading candidates...', 'info');
+            
+            // Fetch both executives data and current vote counts
+            const [execsData, countsData] = await Promise.all([
+                fetch('/api/executives').then(res => res.json()),
+                fetch('/api/votes/counts').then(res => res.json())
+            ]);
+            
+            // Merge the data
+            executives = execsData.map(exec => ({
+                ...exec,
+                yesVotes: countsData[exec.id]?.yesVotes || 0,
+                noVotes: countsData[exec.id]?.noVotes || 0
+            }));
+            
+            showStatusMessage('Candidates loaded', 'success');
+        } catch (error) {
+            console.error('Failed to load executives:', error);
+            showStatusMessage('Failed to load candidates', 'error');
+            
+            // Fallback to empty data
+            executives = [];
+        }
+    }
+
+    // Initialize voting state from localStorage
+    function initializeVotingState() {
+        userVotes = JSON.parse(localStorage.getItem('votes') || '{}');
+        hasSubmitted = localStorage.getItem('hasVoted') === 'true';
+    }
+
+    // Render all executive cards
     function renderExecutives() {
         executivesContainer.innerHTML = '';
         
@@ -109,24 +111,71 @@ document.addEventListener('DOMContentLoaded', function() {
             `;
             executivesContainer.appendChild(card);
         });
-
-        updateVoteCount();
+        
+        // Update total candidates count
+        totalCandidatesElement.textContent = executives.length;
     }
 
-    // Update the vote count display
-    function updateVoteCount() {
-        const votesCast = Object.keys(userVotes).length;
-        votesCastElement.textContent = votesCast;
+    // Global vote function (attached to window)
+    window.voteForExecutive = function(id, vote) {
+        if (hasSubmitted) return;
         
-        // Update submit button state
-        if (hasSubmitted) {
-            submitVotesBtn.textContent = 'Votes Submitted';
-            submitVotesBtn.className = 'px-8 py-3 bg-gray-400 text-white rounded-full font-medium cursor-not-allowed shadow';
-            submitVotesBtn.disabled = true;
+        userVotes[id] = vote;
+        localStorage.setItem('votes', JSON.stringify(userVotes));
+        
+        showStatusMessage(`Vote recorded for ${executives.find(e => e.id === id).name}`, 'success');
+        renderExecutives();
+        updateVoteCount();
+    };
+
+    // Submit all votes to server
+    async function submitVotes() {
+        if (Object.keys(userVotes).length === 0) {
+            showStatusMessage('No votes to submit', 'error');
+            return;
+        }
+        
+        try {
+            showStatusMessage('Submitting your votes...', 'info');
+            
+            const response = await fetch('/api/votes', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    votes: userVotes,
+                    deviceId: getDeviceId()
+                })
+            });
+            
+            if (!response.ok) throw new Error('Server rejected votes');
+            
+            const result = await response.json();
+            
+            // Update local counts with server response
+            executives.forEach(exec => {
+                if (result.updatedCounts[exec.id]) {
+                    exec.yesVotes = result.updatedCounts[exec.id].yesVotes;
+                    exec.noVotes = result.updatedCounts[exec.id].noVotes;
+                }
+            });
+            
+            // Mark as submitted
+            localStorage.setItem('hasVoted', 'true');
+            hasSubmitted = true;
+            
+            showStatusMessage('Your votes have been submitted!', 'success');
+            renderExecutives();
+            updateVoteCount();
+            
+            // Show summary
             resultsSummary.classList.remove('hidden');
             renderSummary();
-        } else {
-            submitVotesBtn.disabled = votesCast === 0;
+            
+        } catch (error) {
+            console.error('Vote submission failed:', error);
+            showStatusMessage('Failed to submit votes. Please try again.', 'error');
         }
     }
 
@@ -152,105 +201,62 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     }
 
-    // Vote for an executive
-    window.voteForExecutive = function(id, vote) {
-        if (hasSubmitted) return;
+    // Update the vote count display
+    function updateVoteCount() {
+        const votesCast = Object.keys(userVotes).length;
+        votesCastElement.textContent = votesCast;
         
-        userVotes[id] = vote;
-        localStorage.setItem('votes', JSON.stringify(userVotes));
-        
-        showStatusMessage(`Vote recorded for ${executives.find(e => e.id === id).name}`, 'success');
+        if (hasSubmitted) {
+            submitVotesBtn.textContent = 'Votes Submitted';
+            submitVotesBtn.className = 'px-8 py-3 bg-gray-400 text-white rounded-full font-medium cursor-not-allowed shadow';
+            submitVotesBtn.disabled = true;
+        } else {
+            submitVotesBtn.disabled = votesCast === 0;
+            submitVotesBtn.className = 'px-8 py-3 bg-indigo-600 text-white rounded-full font-medium hover:bg-indigo-700 transition shadow-lg hover:shadow-xl';
+            submitVotesBtn.textContent = 'Submit Your Votes';
+        }
+    }
+
+    // Edit votes button handler
+    function editVotes() {
+        localStorage.setItem('hasVoted', 'false');
+        hasSubmitted = false;
+        resultsSummary.classList.add('hidden');
         renderExecutives();
-    };
+        updateVoteCount();
+    }
 
-    // Submit all votes
-    submitVotesBtn.addEventListener('click', function() {
-        if (Object.keys(userVotes).length === 0) return;
-        
-        showStatusMessage('Submitting your votes...', 'info');
-        
-        // Simulate API call to submit votes
-        submitVotesToServer()
-            .then(updatedCounts => {
-                // Update the local counts with the server response
-                executives = executives.map(exec => {
-                    return {
-                        ...exec,
-                        yesVotes: updatedCounts[exec.id].yesVotes,
-                        noVotes: updatedCounts[exec.id].noVotes
-                    };
-                });
-                
-                localStorage.setItem('hasVoted', 'true');
-                hasSubmitted = true;
-                
-                showStatusMessage('Your votes have been submitted successfully!', 'success');
-                renderExecutives();
-                
-                // Scroll to results
-                setTimeout(() => {
-                    resultsSummary.scrollIntoView({ behavior: 'smooth' });
-                }, 500);
-            })
-            .catch(error => {
-                showStatusMessage('Failed to submit votes. Please try again.', 'error');
-                console.error('Vote submission error:', error);
-            });
-    });
-
-    // Simulate server submission - replace with actual API call
-    function submitVotesToServer() {
-        return new Promise((resolve) => {
-            // In a real app, this would be a fetch() call to your backend
-            setTimeout(() => {
-                // Calculate what the new counts would be
-                const updatedCounts = {};
-                
-                executives.forEach(exec => {
-                    if (userVotes[exec.id] !== undefined) {
-                        updatedCounts[exec.id] = {
-                            yesVotes: userVotes[exec.id] ? exec.yesVotes + 1 : exec.yesVotes,
-                            noVotes: userVotes[exec.id] ? exec.noVotes : exec.noVotes + 1
-                        };
-                    } else {
-                        updatedCounts[exec.id] = {
-                            yesVotes: exec.yesVotes,
-                            noVotes: exec.noVotes
-                        };
-                    }
-                });
-                
-                resolve(updatedCounts);
-            }, 1500);
-        });
+    // Generate a device ID (simplified version)
+    function getDeviceId() {
+        let deviceId = localStorage.getItem('deviceId');
+        if (!deviceId) {
+            deviceId = 'dev-' + Math.random().toString(36).substr(2, 9);
+            localStorage.setItem('deviceId', deviceId);
+        }
+        return deviceId;
     }
 
     // Show status message
     function showStatusMessage(message, type) {
         statusMessage.textContent = message;
-        
-        // Set color based on type
-        const colors = {
-            success: 'green',
-            error: 'red',
-            info: 'blue'
-        };
-        
+        const colors = { success: 'green', error: 'red', info: 'blue' };
         votingStatus.className = `fixed top-4 right-4 bg-white shadow-lg rounded-lg p-4 z-50 border-l-4 border-${colors[type]}-500`;
         votingStatus.classList.remove('hidden');
         
-        // Hide after 3 seconds
         setTimeout(() => {
             votingStatus.classList.add('hidden');
         }, 3000);
     }
 
-    // Initialize the page
-    renderExecutives();
-    
-    
-    if (hasSubmitted) {
-        resultsSummary.classList.remove('hidden');
-        renderSummary();
-    }
+    // Event listeners
+    submitVotesBtn.addEventListener('click', submitVotes);
+    editVotesBtn.addEventListener('click', editVotes);
+
+    // Initialize the app
+    initializeApp();
 });
+
+// Make the vote function available globally
+function voteForExecutive(id, vote) {
+    window.voteForExecutive(id, vote);
+}
